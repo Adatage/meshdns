@@ -388,5 +388,4 @@ resp, _ := client.AddRecord(ctx, &pb.AddRecordRequest{
 
 ## License
 
-
-MIT
+Apache-2.0
