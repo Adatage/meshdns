@@ -5,11 +5,19 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/miekg/dns"
 
 	"github.com/Adatage/meshdns/internal/config"
 	"github.com/Adatage/meshdns/internal/keydb"
+)
+
+const (
+	dnsReadTimeout  = 3 * time.Second
+	dnsWriteTimeout = 3 * time.Second
+	dnsTCPIdleTimeout = 10 * time.Second
+	dnsMaxMsgSize   = 4096
 )
 
 type Server struct {
@@ -39,18 +47,25 @@ func (s *Server) Start(ctx context.Context) error {
 
 	if s.cfg.UDPEnabled {
 		srv := &dns.Server{
-			Addr:    s.cfg.UDPAddr(),
-			Net:     "udp",
-			Handler: s.handler,
+			Addr:         s.cfg.UDPAddr(),
+			Net:          "udp",
+			Handler:      s.handler,
+			ReadTimeout:  dnsReadTimeout,
+			WriteTimeout: dnsWriteTimeout,
+			UDPSize:      dns.DefaultMsgSize,
 		}
 		planned = append(planned, srv)
 	}
 
 	if s.cfg.TCPEnabled {
 		srv := &dns.Server{
-			Addr:    s.cfg.TCPAddr(),
-			Net:     "tcp",
-			Handler: s.handler,
+			Addr:          s.cfg.TCPAddr(),
+			Net:           "tcp",
+			Handler:       s.handler,
+			ReadTimeout:   dnsReadTimeout,
+			WriteTimeout:  dnsWriteTimeout,
+			IdleTimeout:   func() time.Duration { return dnsTCPIdleTimeout },
+			MaxTCPQueries: 128,
 		}
 		planned = append(planned, srv)
 	}
@@ -101,3 +116,4 @@ func (s *Server) Shutdown() {
 		}
 	}
 }
+

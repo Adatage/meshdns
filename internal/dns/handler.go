@@ -46,7 +46,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	m.Authoritative = false
 	m.RecursionAvailable = h.cfg.RecursiveEnabled
 
-	if len(r.Question) == 0 {
+	if len(r.Question) == 0 || len(r.Question) > 1 {
 		m.SetRcode(r, dns.RcodeFormatError)
 		_ = w.WriteMsg(m)
 		return
@@ -57,8 +57,31 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	ctx := context.Background()
 
 	var clientIP net.IP
-	if host, _, err := net.SplitHostPort(w.RemoteAddr().String()); err == nil {
-		clientIP = net.ParseIP(host)
+	isUDP := false
+	if remoteAddr := w.RemoteAddr(); remoteAddr != nil {
+		if host, _, err := net.SplitHostPort(remoteAddr.String()); err == nil {
+			clientIP = net.ParseIP(host)
+		}
+		isUDP = remoteAddr.Network() == "udp"
+	}
+
+	udpSize := uint16(dns.MinMsgSize)
+	if isUDP {
+		if opt := r.IsEdns0(); opt != nil {
+			if sz := opt.UDPSize(); sz > dns.MinMsgSize {
+				udpSize = sz
+			}
+		}
+		if udpSize > dnsMaxMsgSize {
+			udpSize = dnsMaxMsgSize
+		}
+	}
+
+	write := func(msg *dns.Msg) {
+		if isUDP {
+			msg.Truncate(int(udpSize))
+		}
+		_ = w.WriteMsg(msg)
 	}
 
 	start := time.Now()
@@ -79,11 +102,11 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		if err != nil {
 			h.log.Error("authoritative lookup error", "err", err)
 			m.SetRcode(r, dns.RcodeServerFailure)
-			_ = w.WriteMsg(m)
+			write(m)
 			return
 		}
 		if answered {
-			_ = w.WriteMsg(m)
+			write(m)
 			return
 		}
 	}
@@ -95,7 +118,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		} else if hit {
 			m.Answer = rrs
 			m.Rcode = rcode
-			_ = w.WriteMsg(m)
+			write(m)
 			return
 		}
 	}
@@ -105,7 +128,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		if err != nil {
 			h.log.Warn("recursive resolution failed", "name", q.Name, "err", err)
 			m.SetRcode(r, dns.RcodeServerFailure)
-			_ = w.WriteMsg(m)
+			write(m)
 			return
 		}
 		m.Answer = resp.Answer
@@ -124,11 +147,11 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 				}
 			}
 		}
-		_ = w.WriteMsg(m)
+		write(m)
 		return
 	}
 
 	m.SetRcode(r, dns.RcodeRefused)
-	_ = w.WriteMsg(m)
+	write(m)
 }
 

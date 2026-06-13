@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
@@ -19,17 +19,17 @@ RUN mkdir -p pkg/proto && \
       --go-grpc_out=pkg/proto --go-grpc_opt=paths=source_relative \
       api/proto/dns.proto
 
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /dns-server ./cmd/server && \
-    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /dnsctl     ./cmd/cli
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /meshdns ./cmd/server && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /dnsctl    ./cmd/cli
 
 
 FROM alpine:3.20
 
 RUN apk add --no-cache ca-certificates tzdata
 
-COPY --from=builder /dns-server /usr/local/bin/dns-server
-COPY --from=builder /dnsctl     /usr/local/bin/dnsctl
+COPY --from=builder /meshdns /usr/local/bin/meshdns
+COPY --from=builder /dnsctl  /usr/local/bin/dnsctl
 
 EXPOSE 53/udp 53/tcp 50051/tcp
 
-ENTRYPOINT ["/usr/local/bin/dns-server"]
+ENTRYPOINT ["/usr/local/bin/meshdns"]

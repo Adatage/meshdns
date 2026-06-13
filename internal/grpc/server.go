@@ -11,6 +11,7 @@ import (
 	"github.com/miekg/dns"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 
@@ -48,7 +49,21 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("grpc listen %s: %w", s.cfg.GRPCAddr, err)
 	}
 
-	s.grpc = grpc.NewServer()
+	s.grpc = grpc.NewServer(
+		grpc.MaxRecvMsgSize(1<<20),
+		grpc.MaxSendMsgSize(4<<20),
+		grpc.ConnectionTimeout(10*time.Second),
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			MaxConnectionIdle: 5 * time.Minute,
+			MaxConnectionAge:  30 * time.Minute,
+			Time:              30 * time.Second,
+			Timeout:           10 * time.Second,
+		}),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             5 * time.Second,
+			PermitWithoutStream: false,
+		}),
+	)
 	pb.RegisterDNSControlServer(s.grpc, s)
 	reflection.Register(s.grpc)
 

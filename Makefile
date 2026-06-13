@@ -12,7 +12,7 @@ PROTO_OUT   := pkg/proto
 PROTO_FILES := $(shell find $(PROTO_SRC) -name "*.proto")
 
 BIN_DIR     := bin
-SERVER_BIN  := $(BIN_DIR)/dns-server
+SERVER_BIN  := $(BIN_DIR)/meshdns
 CLI_BIN     := $(BIN_DIR)/dnsctl
 
 ifneq (,$(wildcard .env))
