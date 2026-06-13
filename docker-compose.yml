@@ -1,0 +1,112 @@
+services:
+  cockroach:
+    image: cockroachdb/cockroach:v24.2.4
+    command: start-single-node --insecure --listen-addr=:26257 --http-addr=:8080
+    hostname: cockroach
+    networks:
+      dnsnet:
+        ipv4_address: 172.30.0.10
+    ports:
+      - "26257:26257"
+      - "8080:8080"
+    volumes:
+      - cockroach_data:/cockroach/cockroach-data
+    healthcheck:
+      test:
+        - CMD
+        - cockroach
+        - sql
+        - --insecure
+        - --host=127.0.0.1:26257
+        - --execute=SELECT 1
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+  cockroach-init:
+    image: cockroachdb/cockroach:v24.2.4
+    networks:
+      - dnsnet
+    depends_on:
+      cockroach:
+        condition: service_healthy
+    command:
+      - sql
+      - --insecure
+      - --host=172.30.0.10:26257
+      - --file=/sql/create.sql
+    volumes:
+      - ./sql:/sql:ro
+    restart: on-failure
+  keydb:
+    image: eqalpha/keydb:latest
+    command: keydb-server --save "" --appendonly no
+    networks:
+      dnsnet:
+        ipv4_address: 172.30.0.11
+    ports:
+      - "6379:6379"
+    volumes:
+      - keydb_data:/data
+    healthcheck:
+      test: ["CMD", "keydb-cli", "-h", "127.0.0.1", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+  dns:
+    build: .
+    networks:
+      dnsnet:
+        ipv4_address: 172.30.0.20
+    depends_on:
+      cockroach-init:
+        condition: service_completed_successfully
+      keydb:
+        condition: service_healthy
+    environment:
+      DNS_UDP_ENABLED: "true"
+      DNS_TCP_ENABLED: "true"
+      DNS_UDP_PORT: "53"
+      DNS_TCP_PORT: "53"
+      DNS_RECURSIVE_ENABLED: "true"
+      DNS_GRPC_ADDR: ":50051"
+      COCKROACH_DSN: "postgres://root@172.30.0.10:26257/dns?sslmode=disable"
+      KEYDB_ADDR: "172.30.0.11:6379"
+      DNS_METRICS_ADDR: ":9153"
+    ports:
+      - "53:53/udp"
+      - "53:53/tcp"
+      - "50051:50051"
+      - "9153:9153"
+    cap_add:
+      - NET_BIND_SERVICE
+    restart: unless-stopped
+  prometheus:
+    image: prom/prometheus:latest
+    networks:
+      dnsnet:
+        ipv4_address: 172.30.0.30
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    restart: unless-stopped
+
+networks:
+  dnsnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+volumes:
+  cockroach_data:
+  keydb_data:
+  prometheus_data:

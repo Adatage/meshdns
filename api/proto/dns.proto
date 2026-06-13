@@ -1,0 +1,88 @@
+syntax = "proto3";
+
+package dnscontrol.v1;
+
+option go_package = "github.com/Adatage/meshdns/pkg/proto;proto";
+
+service DNSControl {
+  // ── Zone management ──────────────────────────────────────────────────────
+  rpc CreateZone   (CreateZoneRequest)   returns (CreateZoneResponse);
+  rpc DeleteZone   (DeleteZoneRequest)   returns (DeleteZoneResponse);
+  rpc ListZones    (ListZonesRequest)    returns (ListZonesResponse);
+
+  // ── Record management ────────────────────────────────────────────────────
+  rpc AddRecord    (AddRecordRequest)    returns (AddRecordResponse);
+  rpc DeleteRecord (DeleteRecordRequest) returns (DeleteRecordResponse);
+  rpc ListRecords  (ListRecordsRequest)  returns (ListRecordsResponse);
+
+  // ── Server control ───────────────────────────────────────────────────────
+  rpc GetStatus    (GetStatusRequest)    returns (GetStatusResponse);
+}
+
+// ── Shared entities ──────────────────────────────────────────────────────────
+
+message Zone {
+  string id         = 1;
+  string name       = 2;
+  string created_at = 3;
+  string updated_at = 4;
+}
+
+message Record {
+  string id         = 1;
+  string zone_id    = 2;
+  string zone_name  = 3;
+  string name       = 4;
+  string type       = 5;
+  uint32 ttl        = 6;
+  string data       = 7;
+  string created_at = 8;
+  string subnet     = 9;
+}
+
+// ── Zone RPCs ─────────────────────────────────────────────────────────────────
+
+message CreateZoneRequest  { string name = 1; }
+message CreateZoneResponse { Zone   zone = 1; }
+
+message DeleteZoneRequest  { string name    = 1; }
+message DeleteZoneResponse { bool   success = 1; }
+
+message ListZonesRequest  {}
+message ListZonesResponse { repeated Zone zones = 1; }
+
+// ── Record RPCs ───────────────────────────────────────────────────────────────
+
+message AddRecordRequest {
+  string zone_name = 1;
+  string name      = 2;
+  // DNS type as string, e.g. "A", "AAAA", "MX", "CNAME", "TXT", "NS", "SRV"
+  string type      = 3;
+  uint32 ttl       = 4;
+  // Canonical rdata string, e.g. "1.2.3.4" for A, "10 mail.example.com." for MX
+  string data      = 5;
+  // Optional CIDR subnet — only clients from this subnet will receive this record.
+  // When empty, the record is returned to all clients not matched by a subnet-specific record.
+  string subnet    = 6;
+}
+message AddRecordResponse  { Record record  = 1; }
+
+message DeleteRecordRequest  { string id      = 1; }
+message DeleteRecordResponse { bool   success = 1; }
+
+message ListRecordsRequest  { string zone_name = 1; }
+message ListRecordsResponse { repeated Record records = 1; }
+
+// ── Status RPC ────────────────────────────────────────────────────────────────
+
+message GetStatusRequest {}
+message GetStatusResponse {
+  bool   recursive_enabled     = 1;
+  bool   authoritative_enabled = 2;
+  bool   cache_enabled         = 3;
+  string version               = 4;
+  int64  uptime_seconds        = 5;
+  string bind_udp              = 6;
+  string bind_tcp              = 7;
+  string grpc_addr             = 8;
+}

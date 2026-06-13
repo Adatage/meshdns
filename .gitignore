@@ -1,0 +1,9 @@
+pkg/
+bin/
+
+.env
+.env.*
+!.env.example
+
+.vscode/
+!.vscode/extensions.json
