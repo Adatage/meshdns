@@ -1,6 +1,7 @@
 package dnsserver
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"net"
@@ -12,11 +13,36 @@ import (
 )
 
 const (
-	resolverTimeout = 3 * time.Second
-	maxResolveDepth = 30
-	rootHintsTTL = 48 * time.Hour
-	minDelegationTTL = 60 * time.Second
+	resolverTimeout   = 3 * time.Second
+	publicRaceTimeout = 2 * time.Second // per-public-resolver deadline
+	resolveDeadline   = 5 * time.Second // overall Resolve() deadline
+	maxResolveDepth   = 30
+	rootHintsTTL      = 48 * time.Hour
+	tldCacheTTL       = 24 * time.Hour // TLD delegations almost never change
+	minDelegationTTL  = 60 * time.Second
 )
+
+// publicRecursiveResolvers are well-known fast public DNS services used to
+// race against the iterative path. First valid answer across all wins.
+var publicRecursiveResolvers = []string{
+	"8.8.8.8:53",         // Google
+	"8.8.4.4:53",         // Google
+	"1.1.1.1:53",         // Cloudflare
+	"1.0.0.1:53",         // Cloudflare
+	"9.9.9.9:53",         // Quad9
+	"149.112.112.112:53", // Quad9
+	"208.67.222.222:53",  // OpenDNS
+	"208.67.220.220:53",  // OpenDNS
+	"64.6.64.6:53",       // Verisign
+	"185.228.168.9:53",   // CleanBrowsing
+}
+
+// commonTLDs to pre-warm at startup so the first real query skips root servers.
+var commonTLDs = []string{
+	"com.", "net.", "org.", "io.", "dev.",
+	"co.", "app.", "cloud.", "tech.", "ai.",
+	"info.", "biz.", "me.", "us.", "uk.",
+}
 
 type nsCacheEntry struct {
 	addrs     []string
@@ -24,8 +50,9 @@ type nsCacheEntry struct {
 }
 
 type Resolver struct {
-	client  *dns.Client
-	nsCache sync.Map
+	client    *dns.Client // used for iterative (non-recursive) queries
+	pubClient *dns.Client // used for racing public resolvers (RD=true)
+	nsCache   sync.Map
 }
 
 func NewResolver() *Resolver {
@@ -34,17 +61,89 @@ func NewResolver() *Resolver {
 			Net:     "udp",
 			Timeout: resolverTimeout,
 		},
+		pubClient: &dns.Client{
+			Net:     "udp",
+			Timeout: publicRaceTimeout,
+		},
 	}
-	
 	r.nsCache.Store(".", &nsCacheEntry{
 		addrs:     ipv4RootHints,
 		expiresAt: time.Now().Add(rootHintsTTL),
 	})
+	// Pre-warm TLD NS cache in the background so the first real query
+	// for common TLDs skips the root-server round-trip entirely.
+	go r.prewarmTLDs()
 	return r
 }
 
+// Resolve races iterative resolution against all public recursive resolvers
+// and returns the first valid answer.
 func (r *Resolver) Resolve(qname string, qtype uint16) (*dns.Msg, error) {
 	qname = dns.Fqdn(strings.ToLower(qname))
+
+	type result struct {
+		msg *dns.Msg
+		err error
+	}
+
+	total := 1 + len(publicRecursiveResolvers)
+	ch := make(chan result, total)
+	ctx, cancel := context.WithTimeout(context.Background(), resolveDeadline)
+	defer cancel()
+
+	send := func(res result) {
+		select {
+		case ch <- res:
+		case <-ctx.Done():
+		}
+	}
+
+	// Iterative resolver — authoritative walk starting from best cached point.
+	go func() {
+		msg, err := r.resolveIterative(qname, qtype)
+		send(result{msg, err})
+	}()
+
+	// Race each public resolver in parallel with RD=1.
+	for _, ns := range publicRecursiveResolvers {
+		ns := ns
+		go func() {
+			m := new(dns.Msg)
+			m.SetQuestion(qname, qtype)
+			m.RecursionDesired = true
+			resp, _, err := r.pubClient.Exchange(m, ns)
+			send(result{resp, err})
+		}()
+	}
+
+	received := 0
+	var lastErr error
+	for received < total {
+		select {
+		case res := <-ch:
+			received++
+			if res.err == nil && res.msg != nil && res.msg.Rcode != dns.RcodeServerFailure {
+				return res.msg, nil
+			}
+			if res.err != nil {
+				lastErr = res.err
+			}
+		case <-ctx.Done():
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, fmt.Errorf("resolution timed out for %s", qname)
+		}
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("all resolvers failed for %s", qname)
+}
+
+// resolveIterative performs a full iterative walk from the best cached
+// delegation point down to the authoritative answer.
+func (r *Resolver) resolveIterative(qname string, qtype uint16) (*dns.Msg, error) {
 	nameservers := r.bestStart(qname)
 
 	for depth := 0; depth < maxResolveDepth; depth++ {
@@ -75,6 +174,28 @@ func (r *Resolver) Resolve(qname string, qtype uint16) (*dns.Msg, error) {
 	}
 
 	return nil, fmt.Errorf("max resolution depth reached for %s", qname)
+}
+
+// prewarmTLDs queries root servers for common TLDs and seeds the NS cache,
+// eliminating root-server round-trips for all subsequent queries to those TLDs.
+func (r *Resolver) prewarmTLDs() {
+	for _, tld := range commonTLDs {
+		tld := tld
+		go func() {
+			m := new(dns.Msg)
+			m.SetQuestion(tld, dns.TypeNS)
+			m.RecursionDesired = false
+			root := ipv4RootHints[rand.Intn(len(ipv4RootHints))]
+			resp, _, err := r.client.Exchange(m, root)
+			if err != nil || resp == nil || len(resp.Ns) == 0 {
+				return
+			}
+			addrs, _ := r.extractNS(resp)
+			if len(addrs) > 0 {
+				r.storeDelegation(resp, addrs)
+			}
+		}()
+	}
 }
 
 func (r *Resolver) bestStart(qname string) []string {
@@ -110,6 +231,11 @@ func (r *Resolver) storeDelegation(resp *dns.Msg, addrs []string) {
 		ttl := time.Duration(ns.Hdr.Ttl) * time.Second
 		if ttl < minDelegationTTL {
 			ttl = minDelegationTTL
+		}
+		// TLD delegations (single-label: com., net., org. …) almost never
+		// change — cache them for a full day to skip root-server lookups.
+		if len(dns.SplitDomainName(zone)) == 1 {
+			ttl = tldCacheTTL
 		}
 		r.nsCache.Store(zone, &nsCacheEntry{
 			addrs:     addrs,
@@ -162,8 +288,7 @@ func (r *Resolver) extractNS(resp *dns.Msg) ([]string, error) {
 		}
 	}
 
-	// Determine the zone being delegated to avoid resolving in-bailiwick NS
-	// records that would cause infinite recursion when glue is absent.
+	// Detect delegation zone for in-bailiwick check below.
 	var delegationZone string
 	for _, rr := range resp.Ns {
 		if ns, ok := rr.(*dns.NS); ok {
@@ -188,7 +313,8 @@ func (r *Resolver) extractNS(resp *dns.Msg) ([]string, error) {
 		if delegationZone != "" && dns.IsSubDomain(delegationZone, host) {
 			continue
 		}
-		resolved, err := r.Resolve(host, dns.TypeA)
+		// Use iterative (not the racing Resolve) to avoid nested races.
+		resolved, err := r.resolveIterative(host, dns.TypeA)
 		if err != nil || resolved == nil {
 			continue
 		}
