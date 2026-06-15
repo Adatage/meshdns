@@ -52,6 +52,14 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		return
 	}
 
+	// RFC 6891 §6.1.3: reject unknown EDNS versions with BADVERS.
+	if opt := r.IsEdns0(); opt != nil && opt.Version() != 0 {
+		m.SetRcode(r, dns.RcodeBadVers)
+		m.Extra = []dns.RR{&dns.OPT{Hdr: dns.RR_Header{Name: ".", Rrtype: dns.TypeOPT}}}
+		_ = w.WriteMsg(m)
+		return
+	}
+
 	q := r.Question[0]
 	qtype := dns.TypeToString[q.Qtype]
 	ctx := context.Background()
