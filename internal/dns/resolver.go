@@ -288,7 +288,6 @@ func (r *Resolver) extractNS(resp *dns.Msg) ([]string, error) {
 		}
 	}
 
-	// Detect delegation zone for in-bailiwick check below.
 	var delegationZone string
 	for _, rr := range resp.Ns {
 		if ns, ok := rr.(*dns.NS); ok {
@@ -308,12 +307,9 @@ func (r *Resolver) extractNS(resp *dns.Msg) ([]string, error) {
 			addrs = append(addrs, ips...)
 			continue
 		}
-		// Skip in-bailiwick NS records with no glue — resolving them would
-		// recurse into the same unresolvable zone.
 		if delegationZone != "" && dns.IsSubDomain(delegationZone, host) {
 			continue
 		}
-		// Use iterative (not the racing Resolve) to avoid nested races.
 		resolved, err := r.resolveIterative(host, dns.TypeA)
 		if err != nil || resolved == nil {
 			continue
