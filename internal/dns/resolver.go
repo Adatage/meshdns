@@ -162,6 +162,16 @@ func (r *Resolver) extractNS(resp *dns.Msg) ([]string, error) {
 		}
 	}
 
+	// Determine the zone being delegated to avoid resolving in-bailiwick NS
+	// records that would cause infinite recursion when glue is absent.
+	var delegationZone string
+	for _, rr := range resp.Ns {
+		if ns, ok := rr.(*dns.NS); ok {
+			delegationZone = strings.ToLower(ns.Hdr.Name)
+			break
+		}
+	}
+
 	var addrs []string
 	for _, rr := range resp.Ns {
 		ns, ok := rr.(*dns.NS)
@@ -171,6 +181,11 @@ func (r *Resolver) extractNS(resp *dns.Msg) ([]string, error) {
 		host := strings.ToLower(ns.Ns)
 		if ips, found := glue[host]; found {
 			addrs = append(addrs, ips...)
+			continue
+		}
+		// Skip in-bailiwick NS records with no glue — resolving them would
+		// recurse into the same unresolvable zone.
+		if delegationZone != "" && dns.IsSubDomain(delegationZone, host) {
 			continue
 		}
 		resolved, err := r.Resolve(host, dns.TypeA)
